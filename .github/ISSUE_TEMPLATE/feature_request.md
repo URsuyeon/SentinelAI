@@ -1,3 +1,11 @@
+---
+name: "✨ Feature Request"
+about: 새로운 기능 추가, 에이전트 개선, 또는 운영 효율화를 위한 아이디어를 제안
+title: "[FEAT]"
+labels: 'feature', 'enhancement'
+assignees: ''
+---
+
 # ✨ 기능 제안 (Feature Request)
 
 ## 🎯 기능/개선 목표
