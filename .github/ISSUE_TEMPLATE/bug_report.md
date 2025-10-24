@@ -1,10 +1,12 @@
 ---
-name: "🐛 Bug Report"
+name: "\U0001F41B Bug Report"
 about: 오작동, 추론 오류, 또는 예상치 못한 시스템 동작을 보고
 title: "[BUG]"
-labels: 'bug'
+labels: bug
 assignees: ''
+
 ---
+
 # 🐛 버그 보고 (Bug Report)
 
 ## 📍 문제 요약
