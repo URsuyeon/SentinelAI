@@ -1,3 +1,11 @@
+---
+name: "📚 Docs issue"
+about: RAG Agent 런북이나, 시스템 개발 문서의 오류/개선을 제안
+title: "[DOCS]"
+labels: 'bug'
+assignees: 'documentation, rag-context'
+---
+
 # 📚 문서/RAG 컨텍스트 오류 (Documentation/RAG Context Issue)
 
 ## 📕 관련 문서 및 위치
