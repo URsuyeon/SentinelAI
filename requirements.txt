@@ -1,0 +1,6 @@
+kubernetes>=26.0.0
+requests
+fastapi
+uvicorn[standard]
+pydantic
+httpx

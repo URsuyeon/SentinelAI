@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestrator
+    ports:
+      - "8032:8032" # Orchestrator API
+      - "8033:8033" # Detector Agent Health/Metrics
+    environment:
+      - BOSS_URL=http://127.0.0.1:8032/detect
+      - BOSS_TOKEN=dev-token
+      - LOG_LEVEL=INFO
+      - KUBECONFIG=/app/kubeconfig
+    volumes:
+      - ./src/orchestrator/app.py:/app/app.py
+      - ./src/detector_agent/detector.py:/app/detector.py
+      - /root/sa-kubeconfig:/app/kubeconfig:ro
