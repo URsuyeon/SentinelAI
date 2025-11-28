@@ -21,7 +21,8 @@ class DetectRequest(BaseModel):
     event_type: str
     
     phase: Optional[str] = None
-    container_statuses: Optional[List[Any]] = None
+    container_statuses: Optional[List[Dict[str, Any]]] = None
+    reasons: Optional[List[str]] = None
     
     raw_log_tail: Optional[str] = ""
     describe_snippet: Optional[str] = "" 
@@ -57,6 +58,14 @@ def _enqueue_task(task_id: str, payload: Dict[str, Any]):
 
 @app.post('/detect', response_model=DetectResponse)
 async def detect_endpoint(req: DetectRequest, background_tasks: BackgroundTasks):
+    if BOSS_TOKEN:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing Authorization header")
+        token = authorization.split(" ", 1)[1]
+
+        if not secrets.compare_digest(token, BOSS_TOKEN):
+            raise HTTPException(status_code=403, detail="Invalid token")
+    
     task_id = _generate_task_id()
     payload = req.dict()
 
@@ -80,4 +89,4 @@ async def get_task(task_id: str):
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8032, log_level="info")
+    uvicorn.run("app:app", host="0.0.0.0", port=8032, log_level="info") 

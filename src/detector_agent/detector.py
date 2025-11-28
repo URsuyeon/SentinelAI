@@ -49,6 +49,7 @@ class AlertPayload(BaseModel):
     event_type: str
     phase: str
     container_statuses: List[ContainerStatusInfo]
+    reasons: List[str]
     raw_log_tail: str = Field(default="")
     describe_snippet: str = Field(default="")
     metadata: Dict[str, Any]
@@ -293,6 +294,7 @@ class DetectorAgent:
             namespace=ns, pod_name=name, event_type=event_type,
             phase=phase_str,
             container_statuses=simple_statuses,
+            reasons=reasons,
             raw_log_tail=log_tail,
             describe_snippet=describe_text,
             metadata={"node": getattr(pod.spec, "node_name", ""), "uid": uid},
@@ -301,6 +303,12 @@ class DetectorAgent:
     
     async def send_alert(self, payload: AlertPayload):
         if not self.http_client or not self.send_semaphore:
+            missing = []
+            if not self.http_client:
+                missing.append("http_client")
+            if not self.send_semaphore:
+                missing.append("send_semaphore")
+            logger.warning("Dropping alert because resources are not initialized: %s", ",".join(missing))
             return
 
         headers = {"Authorization": f"Bearer {BOSS_TOKEN}"}
@@ -311,18 +319,18 @@ class DetectorAgent:
                     resp = await self.http_client.post(BOSS_URL, json=payload.dict(), headers=headers)
                     resp.raise_for_status()
                     
-                    logger.info(f"🟢 Sent: {payload.pod_name} ({payload.detection_signature}) Code:{resp.status_code}")
+                    logger.info(f"✅ Sent: {payload.pod_name} ({payload.detection_signature}) Code:{resp.status_code}")
                     self.debounce_cache[payload.detection_signature] = time.time()
                     return
 
                 except httpx.HTTPStatusError as e:
-                    logger.warning(f"🟡 HTTP Error ({attempt+1}/3): {e.response.status_code} - {e.response.text[:100]}")
+                    logger.warning(f"⚠️ HTTP Error ({attempt+1}/3): {e.response.status_code} - {e.response.text[:100]}")
                 except Exception as e:
-                    logger.exception(f"🟡 Send Exception ({attempt+1}/3) for {payload.pod_name}: {e}")
+                    logger.exception(f"⚠️ Send Exception ({attempt+1}/3) for {payload.pod_name}: {e}")
                 
                 if attempt < 2: await asyncio.sleep(1 * (2 ** attempt))
             
-            logger.error(f"🔴 Dropped alert for {payload.pod_name} after retries.")
+            logger.error(f"❌ Dropped alert for {payload.pod_name} after retries.")
 
     async def _event_worker(self):
         # 이벤트 큐 워커
@@ -365,7 +373,7 @@ class DetectorAgent:
 
         # 4. 빌드 및 전송
         payload = self._build_payload(pod, event_type, reasons, sig, log_data, desc_data)
-        asyncio.create_task(self.send_alert(payload))
+        await self.send_alert(payload)
 
     def watch_loop(self):
         # 워처 스레드 루프
@@ -405,8 +413,8 @@ app = FastAPI(title="Detector Agent")
 @app.on_event("startup")
 async def on_startup():
     if not BOSS_URL or not BOSS_TOKEN:
-        logger.critical("🔴 MISSING CONFIG: BOSS_URL and BOSS_TOKEN must be set.")
-        sys.exit(1)
+        logger.critical("❌ MISSING CONFIG: BOSS_URL and BOSS_TOKEN must be set.")
+        raise RuntimeError("❌ Missing BOSS_URL or BOSS_TOKEN environment variables")
         
     agent.main_loop = asyncio.get_running_loop()
     await agent.start_resources()
