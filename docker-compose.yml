@@ -15,6 +15,6 @@ services:
       - LOG_LEVEL=INFO
       - KUBECONFIG=/app/kubeconfig
     volumes:
-      - ./src/orchestrator/app.py:/app/app.py
+      - ./src/orchestrator/orchestrator.py:/app/orchestrator.py
       - ./src/detector_agent/detector.py:/app/detector.py
       - /root/sa-kubeconfig:/app/kubeconfig:ro
