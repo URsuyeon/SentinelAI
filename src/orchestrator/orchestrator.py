@@ -1,14 +1,16 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import Header, FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import secrets
 import logging
+import os
+
 
 # 로그 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | ORCHESTRATOR | %(message)s')
 logger = logging.getLogger(__name__)
-
+BOSS_TOKEN = os.getenv("BOSS_TOKEN", "")
 app = FastAPI(title="Orchestrator API", version="0.1")
 
 TASK_STORE: Dict[str, Dict[str, Any]] = {}
@@ -57,7 +59,7 @@ def _enqueue_task(task_id: str, payload: Dict[str, Any]):
 
 
 @app.post('/detect', response_model=DetectResponse)
-async def detect_endpoint(req: DetectRequest, background_tasks: BackgroundTasks):
+async def detect_endpoint(req: DetectRequest, background_tasks: BackgroundTasks, authorization: Optional[str] = Header(None),):
     if BOSS_TOKEN:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Missing Authorization header")
