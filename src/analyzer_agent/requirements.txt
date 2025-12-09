@@ -4,5 +4,3 @@ fastapi
 uvicorn[standard]
 pydantic
 httpx
-pyjwt
-cryptography
