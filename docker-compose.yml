@@ -1,20 +1,92 @@
 version: '3.8'
 
 services:
+  # --- Orchestrator Service ---
   orchestrator:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: ./src/orchestrator/Dockerfile
     container_name: orchestrator
     ports:
-      - "8032:8032" # Orchestrator API
-      - "8033:8033" # Detector Agent Health/Metrics
+      - "8032:8032"
     environment:
-      - BOSS_URL=http://127.0.0.1:8032/detect
-      - BOSS_TOKEN=dev-token
-      - LOG_LEVEL=INFO
-      - KUBECONFIG=/app/kubeconfig
+      BOSS_TOKEN: dev-token
+      ANALYZER_URL: http://analyzer:8034
+      EXECUTOR_URL: http://executor:8035
+      RAG_URL: http://rag:8036
+      NOTIFIER_URL: http://notifier:8037
+      ORCHESTRATOR_CALLBACK_URL: http://orchestrator:8032
+      LOG_LEVEL: INFO
+
     volumes:
-      - ./src/orchestrator/orchestrator.py:/app/orchestrator.py
-      - ./src/detector_agent/detector.py:/app/detector.py
+      - ./src/auth/auth.py:/app/src/auth/auth.py:ro
+      - ./src/executor_agent/whitelist.json:/app/src/executor_agent/whitelist.json:ro
+    depends_on:
+      - analyzer
+      - executor
+      - rag
+      - notifier
+
+  # --- Detector Agent Service ---
+  detector:
+    build:
+      context: .
+      dockerfile: ./src/detector_agent/Dockerfile
+    container_name: detector
+    ports:
+      - "8033:8033"
+    environment:
+      ORCHESTRATOR_URL: http://orchestrator:8032
+      BOSS_TOKEN: dev-token
+      LOG_LEVEL: INFO
+      DISABLE_DETECTOR_INTEGRATION: "True"
+      KUBECONFIG: /app/kubeconfig
+    volumes:
       - /root/sa-kubeconfig:/app/kubeconfig:ro
+
+  # --- Analyzer Agent Service ---
+  analyzer:
+    build:
+      context: .
+      dockerfile: ./src/analyzer_agent/Dockerfile
+    container_name: analyzer
+    ports:
+      - "8034:8034"
+    environment:
+      DISABLE_LLM_INTEGRATION: "True"
+
+  # --- Executor Agent Service ---
+  executor:
+    build:
+      context: .
+      dockerfile: ./src/executor_agent/Dockerfile
+    container_name: executor
+    ports:
+      - "8035:8035"
+    environment:
+      DISABLE_K8S_INTEGRATION: "True"
+    volumes:
+      - ./src/auth/auth.py:/app/src/auth/auth.py:ro
+      - ./src/executor_agent/whitelist.json:/app/src/executor_agent/whitelist.json:ro
+
+  # --- RAG Agent Service ---
+  rag:
+    build:
+      context: .
+      dockerfile: ./src/rag_agent/Dockerfile
+    container_name: rag
+    ports:
+      - "8036:8036"
+    environment:
+      DISABLE_RAG_INTEGRATION: "True"
+
+  # --- Slack Notifier Service ---
+  notifier:
+    build:
+      context: .
+      dockerfile: ./src/notifier_agent/Dockerfile
+    container_name: notifier
+    ports:
+      - "8037:8037"
+    environment:
+      DISABLE_SLACK_INTEGRATION: "True"

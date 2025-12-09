@@ -1,0 +1,33 @@
+{
+  "global": [
+    "kubectl -n {namespace} describe pod {pod}",
+    "kubectl describe pod {pod} -n {namespace}",
+    "kubectl -n {namespace} logs {pod} --previous",
+    "kubectl -n {namespace} get events --field-selector involvedObject.name={pod}",
+    "kubectl -n {namespace} top pod {pod} --containers",
+    "kubectl -n {namespace} exec {pod} -c {container} -- cat /proc/1/status || true"
+  ],
+  "read": [
+    "kubectl -n {namespace} get pods",
+    "kubectl -n {namespace} get pod {pod}",
+    "kubectl -n {namespace} get svc {svc}",
+    "kubectl -n {namespace} get deployment {deployment}",
+    "kubectl -n {namespace} describe node {node}",
+    "kubectl -n {namespace} get events --field-selector involvedObject.name={pod}",
+    "kubectl -n {namespace} top pod {pod} --containers",
+    "kubectl -n {namespace} logs {pod} --previous",
+    "kubectl -n {namespace} logs {pod} --tail={lines}",
+    "kubectl -n {namespace} exec {pod} -c {container} -- cat /proc/1/status || true"
+  ],
+  "file-read": [
+    "kubectl -n {namespace} exec {pod} -c {container} -- sh -c 'tail -n 200 /var/log/app.log' || true",
+    "kubectl -n {namespace} exec {pod} -c {container} -- sh -c 'sed -n \"1,200p\" /var/log/app.log' || true"
+  ],
+  "write": [
+    "kubectl -n {namespace} delete pod {pod}",
+    "kubectl -n {namespace} delete deployment {deployment}",
+    "kubectl -n {namespace} scale deployment {deployment} --replicas {replicas}",
+    "kubectl -n {namespace} rollout restart deployment {deployment}",
+    "kubectl -n {namespace} apply -f {manifest_file}"
+  ]
+}
