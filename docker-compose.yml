@@ -1,3 +1,4 @@
+# docker-compose.yml
 version: '3.8'
 
 services:
@@ -17,10 +18,17 @@ services:
       NOTIFIER_URL: http://notifier:8037
       ORCHESTRATOR_CALLBACK_URL: http://orchestrator:8032
       LOG_LEVEL: INFO
+      USE_K8S_TOKEN_AUTH: "True"
+      K8S_TOKEN_AUDIENCE: https://kubernetes.default.svc.cluster.local 
+      K8S_SA_NAME: sentinel-executor-sa 
+      K8S_SA_NAMESPACE: sentinel
+      K8S_KUBECONFIG_PATH: /app/kubeconfig
 
     volumes:
       - ./src/auth/auth.py:/app/src/auth/auth.py:ro
       - ./src/executor_agent/whitelist.json:/app/src/executor_agent/whitelist.json:ro
+      - /root/kubeconfigs/external-kubeconfig.yaml:/app/kubeconfig:ro
+
     depends_on:
       - analyzer
       - executor
@@ -39,10 +47,10 @@ services:
       ORCHESTRATOR_URL: http://orchestrator:8032
       BOSS_TOKEN: dev-token
       LOG_LEVEL: INFO
-      DISABLE_DETECTOR_INTEGRATION: "True"
-      KUBECONFIG: /app/kubeconfig
+      DISABLE_DETECTOR_INTEGRATION: "False"
+      KUBECONFIG: /app/detect_kubeconfig
     volumes:
-      - /root/sa-kubeconfig:/app/kubeconfig:ro
+      - /root/sa-kubeconfig:/app/detect_kubeconfig:ro
 
   # --- Analyzer Agent Service ---
   analyzer:
@@ -64,10 +72,12 @@ services:
     ports:
       - "8035:8035"
     environment:
-      DISABLE_K8S_INTEGRATION: "True"
+      DISABLE_K8S_INTEGRATION: "False"
+      KUBECONFIG: /app/kubeconfig
     volumes:
       - ./src/auth/auth.py:/app/src/auth/auth.py:ro
       - ./src/executor_agent/whitelist.json:/app/src/executor_agent/whitelist.json:ro
+      - /root/kubeconfigs/external-kubeconfig.yaml:/app/kubeconfig:ro
 
   # --- RAG Agent Service ---
   rag:
