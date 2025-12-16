@@ -6,10 +6,24 @@ import jwt
 import json
 import os
 import re
+import time
 import shlex
 import logging
+import base64
+import yaml
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+import kubernetes, inspect
+
+# --- K8s Token Generation Imports ---
+try:
+    from kubernetes import client, config
+    from kubernetes.client.rest import ApiException
+    K8S_CLIENT_AVAILABLE = True
+except ImportError:
+    K8S_CLIENT_AVAILABLE = False
+    pass
+# ------------------------------------
 
 # 5분짜리 토큰 발급 및 검증을 위한 간단한 JWT/세션 대체 구현
 # 실제 프로덕션에서는 JWT, OAuth2 등을 사용해야 합니다.
@@ -20,14 +34,33 @@ logger = logging.getLogger(__name__)
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "super-secret-key-for-sentinel-ai")
 ALGORITHM = "HS256"
 
+# --- K8s 관련 환경 변수 ---
+# K8s 토큰 인증 사용 여부 (True/False)
+USE_K8S_TOKEN_AUTH = os.getenv("USE_K8S_TOKEN_AUTH", "False").lower() in ('true', '1', 't')
+
+# 토큰의 Audience 
+K8S_TOKEN_AUDIENCE = os.getenv("K8S_TOKEN_AUDIENCE")
+# 토큰을 발행할 ServiceAccount의 네임스페이스
+K8S_SA_NAMESPACE = os.getenv("K8S_SA_NAMESPACE", "sentinel")
+# kubeconfig 파일 경로
+K8S_KUBECONFIG_PATH = os.getenv("K8S_KUBECONFIG_PATH")
+# ---------------------------
+
 class AuthManager:
     """
     JWT 기반 토큰 발급, 검증 및 명령어 화이트리스트 검증을 담당하는 클래스.
+    K8s 토큰 인증 사용 시, K8s ServiceAccount 토큰 발급을 담당합니다.
     """
-    def __init__(self, token_duration_minutes: int = 5):
+    def __init__(self, token_duration_minutes: int = 10):
+        self.use_k8s_auth = USE_K8S_TOKEN_AUTH
         self.token_duration = timedelta(minutes=token_duration_minutes)
-        # 활성 토큰 저장소는 더 이상 필요하지 않음 (JWT는 자체 포함)
         self.whitelist: Dict[str, List[str]] = self._load_whitelist()
+        self._k8s_client = None
+
+        if self.use_k8s_auth and not K8S_CLIENT_AVAILABLE:
+            logger.error("❌ [K8S AUTH] K8s client unavailable. Falling back to JWT.")
+            logger.info(f"Kubernetes version: {kubernetes.__version__}, {inspect.getfile(kubernetes)}")
+            self.use_k8s_auth = False
 
     def _load_whitelist(self) -> Dict[str, List[str]]:
         """
@@ -78,28 +111,169 @@ class AuthManager:
         with open(whitelist_path, 'r') as f:
             return json.load(f)
 
-    def generate_token(self, task_id: str, command_type: str) -> str:
+    def _get_k8s_client(self):
+        if not self.use_k8s_auth:
+            return None
+
+        if self._k8s_client is None:
+            try:
+                if K8S_KUBECONFIG_PATH and os.path.exists(K8S_KUBECONFIG_PATH):
+                    config.load_kube_config(config_file=K8S_KUBECONFIG_PATH)
+                    logger.info(f"✅ [K8S AUTH] Loaded kubeconfig: {K8S_KUBECONFIG_PATH}")
+                else:
+                    config.load_incluster_config()
+                    logger.info("✅ [K8S AUTH] Loaded in-cluster config")
+            except Exception as e:
+                logger.error(f"❌ [K8S AUTH] Failed to load kube config: {e}")
+                return None
+
+            self._k8s_client = client.CoreV1Api()
+
+        return self._k8s_client
+    
+    def _resolve_service_account(self, command_type: str) -> str:
         """
-        새로운 JWT 실행 토큰을 발급합니다.
+        command_type에 따라 사용할 ServiceAccount 결정
         """
-        now = datetime.now(timezone.utc)
-        expiry = now + self.token_duration
+        if command_type == "write":
+            return "sentinel-executor-write-sa"
+        return "sentinel-executor-read-sa"
+
+
+    def _create_k8s_execution_token(self, task_id: str, command_type: str) -> Optional[str]:
+        """
+        Kubernetes ServiceAccount TokenRequest API를 사용하여 임시 토큰을 발급합니다.
+        """
+        k8s_client = self._get_k8s_client()
+        if not k8s_client:
+            return None
+
+        sa_name = self._resolve_service_account(command_type)
         
-        payload = {
-            "task_id": task_id,
-            "command_type": command_type, # 'read' or 'write'
-            "exp": expiry,
-            "iat": now,
-            "sub": "executor-execution-token"
+        # 토큰 요청 객체 생성
+        token_request = {
+            "apiVersion": "authentication.k8s.io/v1",
+            "kind": "TokenRequest",
+            "spec": {
+                "audiences": [K8S_TOKEN_AUDIENCE],
+                "expirationSeconds": int(self.token_duration.total_seconds()),
+            },
         }
         
-        encoded_jwt = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+        for attempt in range(3):
+            try:
+                resp = k8s_client.create_namespaced_service_account_token(
+                    name=sa_name,
+                    namespace=K8S_SA_NAMESPACE,
+                    body=token_request,
+                )
+
+                logger.info(
+                    f"🔐 [K8S TOKEN] task={task_id} "
+                    f"type={command_type} "
+                    f"sa={sa_name} "
+                    f"ttl={self.token_duration}"
+                )
+
+                return resp.status.token
+
+            except ApiException as e:
+                logger.warning(f"⚠️ TokenRequest failed ({attempt+1}/3): {e}")
+                time.sleep(0.2)
+
+        raise RuntimeError("K8s TokenRequest failed after retries")
+
+    def _build_dynamic_kubeconfig(self, token: str) -> str:
+        """
+        Orchestrator가 사용하는 '진짜 kubeconfig'를 기반으로
+        task 전용 kubeconfig를 문자열로 생성
+        """
+        with open(K8S_KUBECONFIG_PATH, "r") as f:
+            base_cfg = yaml.safe_load(f)
+
+        cluster = base_cfg["clusters"][0]["cluster"]
+        server = cluster["server"]
+        ca_data = cluster.get("certificate-authority-data")
+
+        kubeconfig = {
+            "apiVersion": "v1",
+            "kind": "Config",
+            "clusters": [{
+                "name": "cluster",
+                "cluster": {
+                    "server": server,
+                    "certificate-authority-data": ca_data,
+                },
+            }],
+            "users": [{
+                "name": "executor",
+                "user": {
+                    "token": token,
+                },
+            }],
+            "contexts": [{
+                "name": "exec",
+                "context": {
+                    "cluster": "cluster",
+                    "user": "executor",
+                },
+            }],
+            "current-context": "exec",
+        }
+
+        return yaml.safe_dump(kubeconfig)
+
+    def get_execution_credentials(
+        self,
+        task_id: str,
+        command_type: str
+    ) -> Dict[str, str]:
+        token = self.get_execution_token(task_id, command_type)
+
+        if self.use_k8s_auth:
+            kubeconfig = self._build_dynamic_kubeconfig(token)
+            return {
+                "token": token,
+                "kubeconfig": kubeconfig,
+            }
+
+        # JWT fallback (kubeconfig 없음)
+        return {
+            "token": token,
+            "kubeconfig": "",
+        }
+
+
+    def get_execution_token(self, task_id: str, command_type: str) -> str:      
+        if self.use_k8s_auth:
+            # K8s 토큰 발급 시도
+            try:
+                token = self._create_k8s_execution_token(task_id, command_type)
+                if token:
+                    # K8s 토큰 발급 성공 시, 토큰을 반환
+                    return token
+            except Exception as e:
+                # K8s 토큰 발급 최종 실패 시, JWT로 대체
+                logger.error(f"❌ [K8S TOKEN] Fallback to JWT: {e}")
+
+        # JWT 토큰 발급 (비상용)    
+        now = datetime.now(timezone.utc)
+        expiry = now + self.token_duration
+            
+        payload = {
+            "task_id": task_id,
+            "command_type": command_type,
+            "iat": now,
+            "exp": expiry,
+            "sub": "sentinel-executor",
+        }
+        
         logger.info(f"🔑 [TOKEN] Task {task_id} ({command_type}) token created, expires at {expiry.isoformat()}")
-        return encoded_jwt
+        return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
     def validate_token(self, token: str, task_id: str, command_type: str) -> bool:
         """
-        JWT 토큰의 유효성을 검증합니다.
+        JWT 토큰의 유효성을 검증합니다. (폐기 예정)
         """
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])

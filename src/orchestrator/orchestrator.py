@@ -2,14 +2,15 @@
 from fastapi import Header, FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 import secrets
 import logging
 import os
 import httpx
 import json
-
+import yaml
+from kubernetes import config
 # AuthManager 임포트
 from src.auth.auth import auth_manager
 
@@ -24,7 +25,7 @@ EXECUTOR_URL = os.getenv("EXECUTOR_URL", "http://127.0.0.1:8035")
 RAG_URL = os.getenv("RAG_URL", "http://127.0.0.1:8036")
 NOTIFIER_URL = os.getenv("NOTIFIER_URL", "http://127.0.0.1:8037")
 ORCHESTRATOR_CALLBACK_URL = os.getenv("ORCHESTRATOR_CALLBACK_URL", "http://127.0.0.1:8032")
-
+K8S_KUBECONFIG_PATH = os.getenv("K8S_KUBECONFIG_PATH", "/app/kubeconfig")
 app = FastAPI(title="Orchestrator API", version="0.1")
 
 # Task 상태 저장소
@@ -94,6 +95,51 @@ async def _http_post(url: str, data: Dict[str, Any], task_id: str, step: str):
         TASK_STORE[task_id]["status"] = f"failed_at_{step}"
         return None
 
+def load_cluster_info(kubeconfig_path: str) -> Tuple[str, str]:
+    """
+    kubeconfig 파일에서
+    - API Server 주소
+    - CA 인증서 데이터
+    를 추출
+    """
+    with open(kubeconfig_path, "r") as f:
+        kubeconfig = yaml.safe_load(f)
+
+    cluster = kubeconfig["clusters"][0]["cluster"]
+
+    api_server = cluster["server"]
+    ca_data = cluster.get("certificate-authority-data")
+
+    if not api_server or not ca_data:
+        raise ValueError("Invalid kubeconfig: missing server or CA data")
+
+    return api_server, ca_data
+
+def build_kubeconfig(api_server: str, ca_crt: str, token: str) -> str:
+    return f"""
+apiVersion: v1
+kind: Config
+
+clusters:
+- name: sentinel-cluster
+  cluster:
+    server: {api_server}
+    certificate-authority-data: {ca_crt}
+
+users:
+- name: sentinel-executor
+  user:
+    token: {token}
+
+contexts:
+- name: sentinel-context
+  context:
+    cluster: sentinel-cluster
+    user: sentinel-executor
+
+current-context: sentinel-context
+""".strip()
+
 # --- 핵심 워크플로우 함수 ---
 
 async def _start_workflow(task_id: str, payload: Dict[str, Any]):
@@ -133,17 +179,25 @@ async def _start_workflow(task_id: str, payload: Dict[str, Any]):
                 return
         
         # 3. 읽기 전용 토큰 발급
-        read_token = auth_manager.generate_token(task_id, analyze_cmd.command_type)
-        
+        read_token = auth_manager.get_execution_token(task_id, analyze_cmd.command_type)
+        api_server, ca_data = load_cluster_info(K8S_KUBECONFIG_PATH)
+
+        kubeconfig = build_kubeconfig(
+            api_server=api_server,
+            ca_crt=ca_data,
+            token=read_token
+        )
+
         # 4. Executor Agent에 실행 요청
         executor_req = {
             "task_id": task_id,
             "token": read_token,
+            "kubeconfig": kubeconfig, 
             "command_type": analyze_cmd.command_type,
             "command_list": analyze_cmd.command_list,
             "callback_url": f"{ORCHESTRATOR_CALLBACK_URL}/executor/callback"
         }
-        
+                
         TASK_STORE[task_id]["status"] = "executing_read_commands"
         TASK_STORE[task_id]["history"].append({"step": "executing_read_commands", "timestamp": datetime.utcnow().isoformat() + 'Z'})
         
@@ -233,12 +287,21 @@ async def _execute_final_command(task_id: str, final_analyze_cmd: AnalyzeCommand
     최종 해결 명령을 Executor Agent에 실행 요청
     """
     # 1. 쓰기 전용 토큰 발급
-    write_token = auth_manager.generate_token(task_id, final_analyze_cmd.command_type)
+    write_token = auth_manager.get_execution_token(task_id, final_analyze_cmd.command_type)
+
+    api_server, ca_data = load_cluster_info(K8S_KUBECONFIG_PATH)
+
+    kubeconfig = build_kubeconfig(
+        api_server=api_server,
+        ca_crt=ca_data,
+        token=write_token
+    )
     
     # 2. Executor Agent에 실행 요청
     executor_req = {
         "task_id": task_id,
         "token": write_token,
+        "kubeconfig": kubeconfig, 
         "command_list": final_analyze_cmd.command_list,
         "command_type": final_analyze_cmd.command_type,
         "callback_url": f"{ORCHESTRATOR_CALLBACK_URL}/executor/callback"
