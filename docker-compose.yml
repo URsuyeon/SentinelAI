@@ -47,7 +47,7 @@ services:
       ORCHESTRATOR_URL: http://orchestrator:8032
       BOSS_TOKEN: dev-token
       LOG_LEVEL: INFO
-      DISABLE_DETECTOR_INTEGRATION: "False"
+      DISABLE_DETECTOR_INTEGRATION: "True"
       KUBECONFIG: /app/detect_kubeconfig
     volumes:
       - /root/sa-kubeconfig:/app/detect_kubeconfig:ro
@@ -72,7 +72,7 @@ services:
     ports:
       - "8035:8035"
     environment:
-      DISABLE_K8S_INTEGRATION: "False"
+      DISABLE_K8S_INTEGRATION: "True"
       KUBECONFIG: /app/kubeconfig
     volumes:
       - ./src/auth/auth.py:/app/src/auth/auth.py:ro

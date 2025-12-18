@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # --- 환경 변수 기반 모킹/실제 실행 로직 ---
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://127.0.0.1:8032")
 BOSS_TOKEN = os.getenv("BOSS_TOKEN", "dev-token")
-DEBOUNCE_SECONDS = int(os.getenv("DEBOUNCE_SECONDS", "300"))
+DEBOUNCE_SECONDS = int(os.getenv("DEBOUNCE_SECONDS", "60"))
 MAX_CONCURRENT_SENDS = int(os.getenv("MAX_CONCURRENT_SENDS", "10"))
 QUEUE_MAX_SIZE = int(os.getenv("QUEUE_MAX_SIZE", "1000"))
 CACHE_CLEANUP_INTERVAL = int(os.getenv("CACHE_CLEANUP_INTERVAL", "3600"))
@@ -381,7 +381,7 @@ class DetectorAgent:
             return
 
         w = watch.Watch()
-        logger.info("Watcher thread started.")
+        logger.info("👀 [SCANNING] K8s cluster for anomalies...")  
         last_cleanup = time.time()
 
         while not self.stop_event.is_set():
