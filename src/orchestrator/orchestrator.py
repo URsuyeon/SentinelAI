@@ -3,7 +3,7 @@ from fastapi import Header, FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 import secrets
 import logging
 import os
@@ -13,6 +13,7 @@ import yaml
 from kubernetes import config
 # AuthManager 임포트
 from src.auth.auth import auth_manager
+import asyncio
 
 # 로그 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | ORCHESTRATOR | %(message)s')
@@ -30,6 +31,9 @@ app = FastAPI(title="Orchestrator API", version="0.1")
 
 # Task 상태 저장소
 TASK_STORE: Dict[str, Dict[str, Any]] = {}
+
+# 포드별 이벤트 버퍼 (namespace/pod_name을 키로 사용)
+POD_BUFFERS: Dict[str, Dict[str, Any]] = {}  # pod_key -> {"events": List[Dict], "timer": Optional[asyncio.TimerHandle], "start_time": datetime}
 
 # --- 데이터 모델 ---
 class DetectRequest(BaseModel):
@@ -140,6 +144,37 @@ contexts:
 current-context: sentinel-context
 """.strip()
 
+def combine_events(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    여러 DetectRequest 이벤트를 하나의 페이로드로 합침.
+    """
+    if not events:
+        return {}
+
+    first_event = events[0]
+    combined = first_event.copy()
+
+    combined["timestamp"] = max(e["timestamp"] for e in events)
+    combined["event_types"] = list(set(e["event_type"] for e in events))  # 중복 제거
+
+    all_reasons = set()
+    for e in events:
+        all_reasons.update(e.get("reasons", []))
+    combined["reasons"] = list(all_reasons)
+
+    combined["container_statuses"] = [
+        status for e in events 
+        for status in (e.get("container_statuses") or [])
+    ]
+    
+    combined["raw_log_tail"] = "\n".join(e.get("raw_log_tail", "") for e in events if e.get("raw_log_tail"))
+    combined["describe_snippet"] = "\n".join(e.get("describe_snippet", "") for e in events if e.get("describe_snippet"))
+    combined["detection_signatures"] = list(set(e.get("detection_signature", "") for e in events if e.get("detection_signature")))
+    combined["metadata"] = first_event.get("metadata", {})
+    combined["original_events"] = events
+
+    return combined
+
 # --- 핵심 워크플로우 함수 ---
 
 async def _start_workflow(task_id: str, payload: Dict[str, Any]):
@@ -156,7 +191,7 @@ async def _start_workflow(task_id: str, payload: Dict[str, Any]):
     evt = payload.get('event_type', 'unknown')
     logger.info(f"✅ [WORKFLOW START] TaskID: {task_id}")
     logger.info(f"   └── Event: {pod} [{evt}] | Signature: {payload.get('detection_signature')}")
-    
+
     TASK_STORE[task_id]["status"] = "analyzing_initial"
     TASK_STORE[task_id]["history"].append({"step": "analyzing_initial", "timestamp": datetime.utcnow().isoformat() + 'Z'})
 
@@ -202,7 +237,7 @@ async def _start_workflow(task_id: str, payload: Dict[str, Any]):
         TASK_STORE[task_id]["history"].append({"step": "executing_read_commands", "timestamp": datetime.utcnow().isoformat() + 'Z'})
         
         await _http_post(f"{EXECUTOR_URL}/execute", executor_req, task_id, "EXECUTOR_READ")
-
+    
     except Exception as e:
         logger.error(f"❌ [WORKFLOW] Error in initial analysis/execution: {e}")
         TASK_STORE[task_id]["status"] = "failed_initial_execution"
@@ -340,6 +375,20 @@ async def _complete_workflow(task_id: str, final_callback: ExecutorCallback):
     await _http_post(f"{NOTIFIER_URL}/notify/completion", completion_req, task_id, "NOTIFIER_COMPLETION")
     logger.info(f"🎉 [WORKFLOW COMPLETE] Task {task_id} finished with status: {TASK_STORE[task_id]['status']}")
 
+async def process_buffered_events(pod_key: str, background_tasks: BackgroundTasks):
+    """
+    1분 타이머가 끝난 후, 버퍼된 이벤트를 처리.
+    """
+    if pod_key in POD_BUFFERS:
+        buffer = POD_BUFFERS.pop(pod_key)
+        events = buffer["events"]
+        if events:
+            combined_payload = combine_events(events)
+            task_id = _generate_task_id()
+            logger.info(f"📦 [BUFFER PROCESS] Processing {len(events)} events for pod {pod_key} as task {task_id}")
+            background_tasks.add_task(_start_workflow, task_id, combined_payload)
+        else:
+            logger.info(f"📦 [BUFFER PROCESS] No events for pod {pod_key}")
 
 # --- API 엔드포인트 ---
 
@@ -354,19 +403,46 @@ async def detect_endpoint(req: DetectRequest, background_tasks: BackgroundTasks,
         if not secrets.compare_digest(token, BOSS_TOKEN):
             raise HTTPException(status_code=403, detail="Invalid token")
     
-    task_id = _generate_task_id()
+    pod_key = f"{req.namespace}/{req.pod_name}"
     payload = req.dict()
-
-    logger.info(f"📩 [POST /detect] Received event from {req.namespace}/{req.pod_name}")
+    now = datetime.utcnow()
+    logger.info(f"📩 [POST /detect] Received event from {pod_key}")
     
-    # 워크플로우 시작
-    background_tasks.add_task(_start_workflow, task_id, payload)
-    return DetectResponse(status="received", task_id=task_id)
+    
+    # 버퍼에 이벤트 추가
+    if pod_key not in POD_BUFFERS:
+        POD_BUFFERS[pod_key] = {"events": [], "timer": None, "start_time": now}
+
+    POD_BUFFERS[pod_key]["events"].append(payload)
+
+    # 최대 3분 대기: start_time부터 3분 지났으면 즉시 처리
+    if (now - POD_BUFFERS[pod_key]["start_time"]) > timedelta(minutes=3):
+        logger.info(f"⏰ [BUFFER MAX TIME] Max buffer time exceeded for {pod_key}. Processing immediately.")
+        if POD_BUFFERS[pod_key]["timer"]:
+            POD_BUFFERS[pod_key]["timer"].cancel()
+        await process_buffered_events(pod_key, background_tasks)
+        # 즉시 task_id 반환을 위해 temp 사용
+        temp_task_id = _generate_task_id()
+        return DetectResponse(status="processed_max_time", task_id=temp_task_id)
+
+    # 기존 타이머 취소하고 새 1분 타이머 설정 (마지막 이벤트로부터 1분 대기)
+    if POD_BUFFERS[pod_key]["timer"]:
+        POD_BUFFERS[pod_key]["timer"].cancel()
+
+    loop = asyncio.get_running_loop()
+    POD_BUFFERS[pod_key]["timer"] = loop.call_later(60, lambda: background_tasks.add_task(process_buffered_events, pod_key, background_tasks))
+    
+    # /detect 엔드포인트 안, 버퍼 추가 후
+    logger.info(f"[BUFFER DEBUG] Pod {pod_key} | Events count: {len(POD_BUFFERS[pod_key]['events'])} | Start time: {POD_BUFFERS[pod_key]['start_time']} | Elapsed: {now - POD_BUFFERS[pod_key]['start_time']}")
+    
+    # 즉시 task_id 반환 (버퍼링 중이므로 실제 task_id는 나중에 생성되지만, 임시로 생성)
+    temp_task_id = _generate_task_id()
+    return DetectResponse(status="buffered", task_id=temp_task_id)
 
 
 @app.post('/executor/callback')
 async def executor_callback_endpoint(req: ExecutorCallback, background_tasks: BackgroundTasks):
-    """Executor Agent로부터 명령어 실행 결과 수신"""
+    # Executor Agent로부터 명령어 실행 결과 수신
     task_id = req.task_id
     
     if task_id not in TASK_STORE:
@@ -384,10 +460,9 @@ async def executor_callback_endpoint(req: ExecutorCallback, background_tasks: Ba
         
     return {"status": "accepted"}
 
-
 @app.post('/slack/callback')
 async def slack_callback_endpoint(req: SlackCallback, background_tasks: BackgroundTasks):
-    """Slack Notifier로부터 운영자 승인/거부 결과 수신"""
+    # Slack Notifier로부터 운영자 승인/거부 결과 수신
     task_id = req.task_id
     
     if task_id not in TASK_STORE:
@@ -420,7 +495,7 @@ async def slack_callback_endpoint(req: SlackCallback, background_tasks: Backgrou
 
 @app.get('/health')
 async def health():
-    """Health Check"""
+    #Health Check
     return {"status": "ok"}
 
 

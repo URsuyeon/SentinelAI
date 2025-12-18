@@ -167,18 +167,10 @@ class AuthManager:
                     namespace=K8S_SA_NAMESPACE,
                     body=token_request,
                 )
-
-                logger.info(
-                    f"🔐 [K8S TOKEN] task={task_id} "
-                    f"type={command_type} "
-                    f"sa={sa_name} "
-                    f"ttl={self.token_duration}"
-                )
-
                 return resp.status.token
 
             except ApiException as e:
-                logger.warning(f"⚠️ TokenRequest failed ({attempt+1}/3): {e}")
+                logger.warning(f"⚠️ TokenRequest failed ({attempt+1}/3)")
                 time.sleep(0.2)
 
         raise RuntimeError("K8s TokenRequest failed after retries")
