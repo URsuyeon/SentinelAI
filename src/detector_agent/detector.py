@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import os
-import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -31,19 +30,19 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 logging.basicConfig(level=LOG_LEVEL, format='%(asctime)s | %(levelname)s | DETECTOR | %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- 환경 변수 기반 모킹/실제 실행 로직 ---
+# --- 환경 변수 ---
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://127.0.0.1:8032")
 BOSS_TOKEN = os.getenv("BOSS_TOKEN", "dev-token")
-DEBOUNCE_SECONDS = int(os.getenv("DEBOUNCE_SECONDS", "60"))
+DEBOUNCE_SECONDS = int(os.getenv("DEBOUNCE_SECONDS", "30"))
 MAX_CONCURRENT_SENDS = int(os.getenv("MAX_CONCURRENT_SENDS", "10"))
 QUEUE_MAX_SIZE = int(os.getenv("QUEUE_MAX_SIZE", "1000"))
 CACHE_CLEANUP_INTERVAL = int(os.getenv("CACHE_CLEANUP_INTERVAL", "3600"))
 
-app = FastAPI(title="Detector Agent API", version="0.1")
+# 모킹 모드 활성화 
+ENABLE_MOCK_MODE = os.getenv("ENABLE_MOCK_MODE", "False").lower() in ('true', '1', 't')
+logger.info(f"⚙️  Detector Mode: {'MOCKING' if ENABLE_MOCK_MODE else 'REAL K8s WATCHER'}")
 
-# DISABLE_DETECTOR_INTEGRATION=True 일 때 모킹 활성화 (사용자 요청에 따라 로직 반전)
-DISABLE_DETECTOR_INTEGRATION = os.getenv("DISABLE_DETECTOR_INTEGRATION", "True").lower() in ('true', '1', 't')
-logger.info(f"⚙️  Detector Integration Status: {'MOCKING' if DISABLE_DETECTOR_INTEGRATION else 'ACTIVE'}")
+app = FastAPI(title="Detector Agent API", version="0.1")
 
 # --- 데이터 모델 ---
 class ContainerStatusInfo(BaseModel):
@@ -87,7 +86,7 @@ class DetectorAgent:
                 config.load_kube_config()
                 logger.info("Loaded local kube-config.")
         except Exception as e:
-            logger.warning(f"No kubernetes config found or client unavailable: {e}. Running without watcher (no demo).")
+            logger.warning(f"No kubernetes config found or client unavailable: {e}. Running without watcher.")
             self.k8s_available = False
 
         self.v1 = client.CoreV1Api() if self.k8s_available and client is not None else None
@@ -158,7 +157,7 @@ class DetectorAgent:
             return f"[No K8s client] logs unavailable for {ns}/{name}/{container}"
         try:
             return self.v1.read_namespaced_pod_log(
-                name=name, namespace=ns, container=container, tail_lines=50, _request_timeout=5
+                name=name, namespace=ns, container=container, tail_lines=50, _request_timeout=2
             )
         except ApiException as e:
             return f"[Log API Error] {getattr(e, 'reason', str(e))}"
@@ -170,7 +169,7 @@ class DetectorAgent:
             return f"[No K8s client] events unavailable for {ns}/{name}"
         try:
             fs = f"involvedObject.name={name},involvedObject.uid={uid},involvedObject.kind=Pod"
-            events = self.v1.list_namespaced_event(namespace=ns, field_selector=fs, _request_timeout=5)
+            events = self.v1.list_namespaced_event(namespace=ns, field_selector=fs, _request_timeout=2)
             lines = [f"--- Events for {name} ---"]
             if not events.items:
                 lines.append("No events found.")
@@ -294,7 +293,7 @@ class DetectorAgent:
             simple_statuses.append(csi.model_dump())
 
         return DetectRequest(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(timezone.utc),
             namespace=ns, pod_name=name, event_type=event_type,
             phase=phase_str,
             container_statuses=simple_statuses,
@@ -405,55 +404,36 @@ class DetectorAgent:
 
         logger.info("Watcher thread stopped.")
 
-async def _send_alert(alert: DetectRequest):
+async def _mock_detection_loop(agent: DetectorAgent):
     """
-    Orchestrator에 탐지 알림을 전송합니다.
+    K8s 이상 탐지 루프를 모킹합니다. (60초마다 OOMKilled 시나리오 발생 모킹)
     """
-    url = f"{ORCHESTRATOR_URL}/detect"
-    headers = {"Authorization": f"Bearer {BOSS_TOKEN}"}
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            payload = jsonable_encoder(alert)
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code == 200:
-                logger.info(f"✅ [ALERT SENT] Alert for {alert.pod_name} sent to Orchestrator. Task ID: {resp.json().get('task_id')}")
-            else:
-                logger.error(f"❌ [ALERT FAIL] Failed to send alert. Status: {resp.status_code}, Body: {resp.text[:200]}")
-    except Exception as e:
-        logger.error(f"❌ [ALERT FAIL] Exception during alert sending: {e}")
+    await asyncio.sleep(5)  # 초기 대기
 
-async def _mock_detection_loop():
-    """
-    K8s 이상 탐지 루프를 모킹합니다. (5초마다 OOMKilled 시나리오 발생 모킹)
-    """
-    await asyncio.sleep(5) # 초기 대기
-    
     while True:
-        logger.info("👀 [SCANNING] K8s cluster for anomalies...")
-        
-        # OOMKilled 시나리오 모킹
+        logger.info("👀 [MOCK SCANNING] Simulating anomaly detection...")
+
         alert = DetectRequest(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             namespace="default",
             pod_name="my-app-pod-abcde",
             event_type="PodFailed",
             phase="Failed",
-            reasons=["OOMKilled"],
-            describe_snippet="... Last State: Terminated, Reason: OOMKilled ...",
+            reasons=["Terminated(OOMKilled, code=137)"],
+            describe_snippet="Last State: Terminated, Reason: OOMKilled, Exit Code: 137",
             raw_log_tail="Out of memory: Kill process 123 (java) score 999 or sacrifice child",
-            detection_signature="oomkilled-pod-failure"
+            detection_signature="mock-oomkilled-signature",
+            metadata={"node": "kind-worker", "uid": "mock-uid-12345"}
         )
         
-        await _send_alert(alert)
+        await agent.send_alert(alert)
         
-        # 30초마다 반복
-        await asyncio.sleep(30)
-        
+        await asyncio.sleep(60)
 
 
 # --- API 엔드포인트 ---
 agent = DetectorAgent()
+
 @app.get('/health')
 async def health():
     return {"status": "ok"}
@@ -463,19 +443,16 @@ async def on_startup():
     agent.main_loop = asyncio.get_running_loop()
     await agent.start_resources()
 
-    if DISABLE_DETECTOR_INTEGRATION:
-        # 모킹 활성화 시, 모킹 루프 시작
-        asyncio.create_task(_mock_detection_loop())
-        logger.info("🚀 Detector Agent started mock detection loop.")
+    if ENABLE_MOCK_MODE:
+        asyncio.create_task(_mock_detection_loop(agent))
+        logger.info("🚀 Detector Agent started in MOCK mode.")
         return
 
-    # 모킹 비활성화 시, K8s 클라이언트가 사용 가능하면 워처 시작
     if agent.k8s_available:
-        # 워처 스레드 시작
         agent.main_loop.run_in_executor(None, agent.watch_loop)
-        logger.info("🚀 Detector Agent started K8s watcher.")
+        logger.info("🚀 Detector Agent started real K8s watcher.")
     else:
-        logger.warning("Kubernetes config not available and mock mode disabled: watcher not started.")
+        logger.warning("Kubernetes client not available and mock mode disabled: no detection running.")
 
 @app.on_event("shutdown")
 async def shutdown_event():

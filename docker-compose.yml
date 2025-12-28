@@ -34,6 +34,8 @@ services:
       - executor
       - rag
       - notifier
+    networks:
+      - sentinel_net
 
   # --- Detector Agent Service ---
   detector:
@@ -43,12 +45,16 @@ services:
     container_name: detector
     ports:
       - "8033:8033"
+    depends_on:
+      - orchestrator
     environment:
+      ENABLE_MOCK_MODE: "True"
       ORCHESTRATOR_URL: http://orchestrator:8032
       BOSS_TOKEN: dev-token
       LOG_LEVEL: INFO
-      DISABLE_DETECTOR_INTEGRATION: "True"
       KUBECONFIG: /app/detect_kubeconfig
+    networks:
+      - sentinel_net
     volumes:
       - /root/sa-kubeconfig:/app/detect_kubeconfig:ro
 
@@ -62,6 +68,17 @@ services:
       - "8034:8034"
     environment:
       DISABLE_LLM_INTEGRATION: "True"
+      LLM_PROVIDER: "openai"               # openai / gemini / grok 
+      QDRANT_URL: "http://qdrant:6333"
+      QDRANT_COLLECTION: "analyzer_cache"
+      SECRETS_PATH: "/app/secrets.json"
+    volumes:
+      - ./secrets/secrets.json:/app/secrets.json:ro   # 시크릿 파일 마운트
+    depends_on:
+      - qdrant
+    networks:
+      - sentinel_net
+    restart: unless-stopped
 
   # --- Executor Agent Service ---
   executor:
@@ -74,6 +91,8 @@ services:
     environment:
       DISABLE_K8S_INTEGRATION: "True"
       KUBECONFIG: /app/kubeconfig
+    networks:
+      - sentinel_net
     volumes:
       - ./src/auth/auth.py:/app/src/auth/auth.py:ro
       - ./src/executor_agent/whitelist.json:/app/src/executor_agent/whitelist.json:ro
@@ -88,7 +107,13 @@ services:
     ports:
       - "8036:8036"
     environment:
-      DISABLE_RAG_INTEGRATION: "True"
+      DISABLE_RAG_INTEGRATION: "False"
+    networks:
+      - sentinel_net
+    volumes:
+      - ./docs/kubernetes:/app/docs/kubernetes:ro
+    depends_on:
+      - qdrant
 
   # --- Slack Notifier Service ---
   notifier:
@@ -99,4 +124,30 @@ services:
     ports:
       - "8037:8037"
     environment:
-      DISABLE_SLACK_INTEGRATION: "True"
+      DISABLE_SLACK_INTEGRATION: "False"
+      SLACK_DEFAULT_CHANNEL: "C0A521EUU4D"
+      ORCHESTRATOR_CALLBACK_URL: http://orchestrator:8032/slack/callback
+    networks:
+      - sentinel_net
+    volumes:
+      - ./secrets/secrets.json:/app/secrets.json:ro  
+  
+  # --- Qdrant (Vector DB for cache) ---
+  qdrant:
+    image: qdrant/qdrant:v1.10.0
+    container_name: qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    networks:
+      - sentinel_net
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+
+networks:
+  sentinel_net:
+    driver: bridge

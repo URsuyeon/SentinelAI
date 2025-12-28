@@ -6,3 +6,5 @@ pydantic
 httpx
 pyjwt
 cryptography
+slack-bolt
+slack-sdk

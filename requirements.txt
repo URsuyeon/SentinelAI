@@ -6,3 +6,8 @@ pydantic
 httpx
 pyjwt
 cryptography
+slack_bolt
+slack-sdk
+fastembed 
+langchain-community 
+langchain-qdrant

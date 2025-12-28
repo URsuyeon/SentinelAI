@@ -211,6 +211,7 @@ async def _start_workflow(task_id: str, payload: Dict[str, Any]):
             if not auth_manager.check_whitelist(cmd, analyze_cmd.command_type):
                 logger.error(f"❌ [WHITELIST] Command rejected: {cmd}")
                 TASK_STORE[task_id]["status"] = "failed_whitelist_check"
+                await finalize_task(task_id, "failed_final_whitelist_check", "최종 명령어가 화이트리스트에 위반되어 차단됨.")
                 return
         
         # 3. 읽기 전용 토큰 발급
@@ -240,6 +241,10 @@ async def _start_workflow(task_id: str, payload: Dict[str, Any]):
     
     except Exception as e:
         logger.error(f"❌ [WORKFLOW] Error in initial analysis/execution: {e}")
+        await finalize_task(task_id, "failed_initial_execution", "초기 분석 또는 읽기 명령 실행 중 오류 발생.")
+        
+    except Exception as e:
+        logger.error(f"❌ [WORKFLOW] Error in initial analysis/execution: {e}")
         TASK_STORE[task_id]["status"] = "failed_initial_execution"
 
 
@@ -250,14 +255,13 @@ async def _continue_workflow_after_read(task_id: str, executor_callback: Executo
     logger.info(f"✅ [EXECUTOR CALLBACK] Task {task_id} received read logs. Status: {executor_callback.status}")
     
     if executor_callback.status != "success":
-        TASK_STORE[task_id]["status"] = "failed_read_execution"
-        TASK_STORE[task_id]["history"].append({"step": "failed_read_execution", "timestamp": datetime.utcnow().isoformat() + 'Z', "logs": executor_callback.execution_logs})
+        await finalize_task(task_id, "failed_read_execution", "증거 수집 명령 실행 실패.")
         return
 
     TASK_STORE[task_id]["read_logs"] = executor_callback.execution_logs
     TASK_STORE[task_id]["status"] = "searching_rag"
     TASK_STORE[task_id]["history"].append({"step": "searching_rag", "timestamp": datetime.utcnow().isoformat() + 'Z'})
-
+    
     # 1. RAG Agent에 문서 검색 요청
     rag_req = {
         "task_id": task_id,
@@ -289,32 +293,40 @@ async def _continue_workflow_after_read(task_id: str, executor_callback: Executo
         final_analyze_cmd = AnalyzeCommandResponse(**final_analyze_resp)
         TASK_STORE[task_id]["final_commands"] = final_analyze_cmd.dict()
         
-        # 3. 화이트리스트 검증 (쓰기 전용)
+        # 3. 화이트리스트 검증
         for cmd in final_analyze_cmd.command_list:
             if not auth_manager.check_whitelist(cmd, final_analyze_cmd.command_type):
                 logger.error(f"❌ [WHITELIST] Final command rejected: {cmd}")
-                TASK_STORE[task_id]["status"] = "failed_final_whitelist_check"
+                await finalize_task(task_id, "failed_final_whitelist_check", "최종 명령어가 화이트리스트에 위반되어 차단됨.")
                 return
 
-        # 4. 위험도 확인 및 승인 절차
+        # 4. 위험도 확인
         if final_analyze_cmd.is_risky:
             TASK_STORE[task_id]["status"] = "awaiting_approval"
             TASK_STORE[task_id]["history"].append({"step": "awaiting_approval", "timestamp": datetime.utcnow().isoformat() + 'Z'})
-            
-            # Slack Notifier에 승인 요청
             approval_req = {
                 "task_id": task_id,
                 "command_list": final_analyze_cmd.command_list,
                 "callback_url": f"{ORCHESTRATOR_CALLBACK_URL}/slack/callback"
             }
-            await _http_post(f"{NOTIFIER_URL}/notify/approval", approval_req, task_id, "NOTIFIER_APPROVAL")
+            post_result = await _http_post(f"{NOTIFIER_URL}/notify/approval", approval_req, task_id, "NOTIFIER_APPROVAL")
+            if not post_result:
+                logger.warning(f"⚠️ Notifier 실패: {task_id} 자동 승인 처리 (통신 오류).")
+                TASK_STORE[task_id]["status"] = "auto_approved_due_to_notifier_fail"
+                await _execute_final_command(task_id, final_analyze_cmd)
+                await finalize_task(task_id, "auto_approved", "Notifier 통신 실패로 자동 승인됨.")
+                return
+            loop = asyncio.get_running_loop()
+            TASK_STORE[task_id]["approval_timer"] = loop.call_later(
+                30,  
+                lambda: asyncio.create_task(_auto_approve_if_pending(task_id))
+            )
         else:
-            # 위험하지 않으면 바로 실행
             await _execute_final_command(task_id, final_analyze_cmd)
 
     except Exception as e:
         logger.error(f"❌ [WORKFLOW] Error in final analysis/execution: {e}")
-        TASK_STORE[task_id]["status"] = "failed_final_execution_prep"
+        await finalize_task(task_id, "failed_final_execution_prep", "최종 분석 또는 준비 중 오류 발생.")
 
 
 async def _execute_final_command(task_id: str, final_analyze_cmd: AnalyzeCommandResponse):
@@ -349,32 +361,15 @@ async def _execute_final_command(task_id: str, final_analyze_cmd: AnalyzeCommand
 
 
 async def _complete_workflow(task_id: str, final_callback: ExecutorCallback):
-    """
-    Executor Agent로부터 최종 해결 명령어 실행 결과를 받은 후 워크플로우 완료
-    """
     logger.info(f"✅ [EXECUTOR CALLBACK] Task {task_id} received final logs. Status: {final_callback.status}")
     
     TASK_STORE[task_id]["final_logs"] = final_callback.execution_logs
     
     if final_callback.status == "success":
-        TASK_STORE[task_id]["status"] = "resolved"
-        summary = "K8s 문제 해결 완료."
+        await finalize_task(task_id, "resolved", "K8s 문제 해결 완료.")
     else:
-        TASK_STORE[task_id]["status"] = "failed_resolution"
-        summary = "K8s 문제 해결 실패."
-
-    TASK_STORE[task_id]["history"].append({"step": TASK_STORE[task_id]["status"], "timestamp": datetime.utcnow().isoformat() + 'Z', "logs": final_callback.execution_logs})
-
-    # Slack Notifier에 완료 알림
-    completion_req = {
-        "task_id": task_id,
-        "status": TASK_STORE[task_id]["status"],
-        "summary": summary,
-        "details": TASK_STORE[task_id]
-    }
-    await _http_post(f"{NOTIFIER_URL}/notify/completion", completion_req, task_id, "NOTIFIER_COMPLETION")
-    logger.info(f"🎉 [WORKFLOW COMPLETE] Task {task_id} finished with status: {TASK_STORE[task_id]['status']}")
-
+        await finalize_task(task_id, "failed_resolution", "K8s 문제 해결 실패.")
+        
 async def process_buffered_events(pod_key: str, background_tasks: BackgroundTasks):
     """
     1분 타이머가 끝난 후, 버퍼된 이벤트를 처리.
@@ -389,6 +384,69 @@ async def process_buffered_events(pod_key: str, background_tasks: BackgroundTask
             background_tasks.add_task(_start_workflow, task_id, combined_payload)
         else:
             logger.info(f"📦 [BUFFER PROCESS] No events for pod {pod_key}")
+
+async def _auto_approve_if_pending(task_id: str):
+    if task_id not in TASK_STORE:
+        return
+
+    if TASK_STORE[task_id]["status"] != "awaiting_approval":
+        logger.info(f"ℹ️ [AUTO APPROVE] Task {task_id} no longer awaiting approval. Skipping auto-approve.")
+        return
+
+    logger.warning(f"⏰ [AUTO APPROVE] Task {task_id} timed out (no response). Auto-approving.")
+    TASK_STORE[task_id]["status"] = "auto_approved"
+    TASK_STORE[task_id]["history"].append({
+        "step": "auto_approved",
+        "timestamp": datetime.utcnow().isoformat() + 'Z',
+        "reason": "Timeout after 5 minutes - automatic approval"
+    })
+
+    # 타이머 취소 및 제거
+    if "approval_timer" in TASK_STORE[task_id]:
+        TASK_STORE[task_id]["approval_timer"].cancel()
+        del TASK_STORE[task_id]["approval_timer"]
+
+    # 자동 실행
+    final_analyze_cmd = AnalyzeCommandResponse(**TASK_STORE[task_id]["final_commands"])
+    await _execute_final_command(task_id, final_analyze_cmd)
+
+    # === safe_details로 보내기 ===
+    safe_details = TASK_STORE[task_id].copy()
+    safe_details.pop("approval_timer", None)
+
+    timeout_req = {
+        "task_id": task_id,
+        "status": "auto_approved",
+        "summary": "5분 동안 응답 없어 자동 승인되었습니다.",
+        "details": safe_details
+    }
+    await _http_post(f"{NOTIFIER_URL}/notify/completion", timeout_req, task_id, "NOTIFIER_AUTO_APPROVE")
+
+async def finalize_task(task_id: str, final_status: str, summary: str):
+    """
+    모든 워크플로우 종료 시 호출하여 상태 업데이트 + 완료 알림 전송
+    """
+    if task_id not in TASK_STORE:
+        return
+
+    TASK_STORE[task_id]["status"] = final_status
+    TASK_STORE[task_id]["history"].append({
+        "step": final_status,
+        "timestamp": datetime.utcnow().isoformat() + 'Z'
+    })
+
+    # === 수정 포인트: TimerHandle 같은 비직렬화 객체 제거 ===
+    safe_details = TASK_STORE[task_id].copy()
+    safe_details.pop("approval_timer", None)  # 타이머 객체 제거
+
+    completion_req = {
+        "task_id": task_id,
+        "status": final_status,
+        "summary": summary,
+        "details": safe_details  # 안전한 딕셔너리만 보냄
+    }
+    await _http_post(f"{NOTIFIER_URL}/notify/completion", completion_req, task_id, "NOTIFIER_COMPLETION")
+    logger.info(f"🎉 [WORKFLOW COMPLETE] Task {task_id} finished with status: {final_status}")
 
 # --- API 엔드포인트 ---
 
@@ -416,7 +474,7 @@ async def detect_endpoint(req: DetectRequest, background_tasks: BackgroundTasks,
     POD_BUFFERS[pod_key]["events"].append(payload)
 
     # 최대 3분 대기: start_time부터 3분 지났으면 즉시 처리
-    if (now - POD_BUFFERS[pod_key]["start_time"]) > timedelta(minutes=3):
+    if (now - POD_BUFFERS[pod_key]["start_time"]) > timedelta(minutes=2):
         logger.info(f"⏰ [BUFFER MAX TIME] Max buffer time exceeded for {pod_key}. Processing immediately.")
         if POD_BUFFERS[pod_key]["timer"]:
             POD_BUFFERS[pod_key]["timer"].cancel()
@@ -432,9 +490,6 @@ async def detect_endpoint(req: DetectRequest, background_tasks: BackgroundTasks,
     loop = asyncio.get_running_loop()
     POD_BUFFERS[pod_key]["timer"] = loop.call_later(60, lambda: background_tasks.add_task(process_buffered_events, pod_key, background_tasks))
     
-    # /detect 엔드포인트 안, 버퍼 추가 후
-    logger.info(f"[BUFFER DEBUG] Pod {pod_key} | Events count: {len(POD_BUFFERS[pod_key]['events'])} | Start time: {POD_BUFFERS[pod_key]['start_time']} | Elapsed: {now - POD_BUFFERS[pod_key]['start_time']}")
-    
     # 즉시 task_id 반환 (버퍼링 중이므로 실제 task_id는 나중에 생성되지만, 임시로 생성)
     temp_task_id = _generate_task_id()
     return DetectResponse(status="buffered", task_id=temp_task_id)
@@ -442,7 +497,6 @@ async def detect_endpoint(req: DetectRequest, background_tasks: BackgroundTasks,
 
 @app.post('/executor/callback')
 async def executor_callback_endpoint(req: ExecutorCallback, background_tasks: BackgroundTasks):
-    # Executor Agent로부터 명령어 실행 결과 수신
     task_id = req.task_id
     
     if task_id not in TASK_STORE:
@@ -450,16 +504,16 @@ async def executor_callback_endpoint(req: ExecutorCallback, background_tasks: Ba
 
     current_status = TASK_STORE[task_id]["status"]
     
-    if current_status == "executing_read_commands":
-        background_tasks.add_task(_continue_workflow_after_read, task_id, req)
-    elif current_status == "executing_write_commands":
-        background_tasks.add_task(_complete_workflow, task_id, req)
+    if current_status in ("executing_read_commands", "executing_write_commands", "auto_approved"):
+        if current_status == "executing_read_commands":
+            background_tasks.add_task(_continue_workflow_after_read, task_id, req)
+        elif current_status in ("executing_write_commands", "auto_approved"):
+            background_tasks.add_task(_complete_workflow, task_id, req)
+        return {"status": "accepted"}
     else:
-        logger.warning(f"⚠️ [EXECUTOR CALLBACK] Received unexpected callback for task {task_id} in status {current_status}")
+        logger.warning(f"⚠️ [EXECUTOR CALLBACK] Unexpected callback for task {task_id} in status {current_status}")
         raise HTTPException(status_code=400, detail=f"Unexpected callback in status {current_status}")
         
-    return {"status": "accepted"}
-
 @app.post('/slack/callback')
 async def slack_callback_endpoint(req: SlackCallback, background_tasks: BackgroundTasks):
     # Slack Notifier로부터 운영자 승인/거부 결과 수신
