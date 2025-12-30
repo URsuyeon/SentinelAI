@@ -16,18 +16,23 @@ services:
       EXECUTOR_URL: http://executor:8035
       RAG_URL: http://rag:8036
       NOTIFIER_URL: http://notifier:8037
-      ORCHESTRATOR_CALLBACK_URL: http://orchestrator:8032
+      ORCHESTRATOR_CALLBACK_URL: http://orchestrator:root
       LOG_LEVEL: INFO
       USE_K8S_TOKEN_AUTH: "True"
+      DISABLE_SLACK_INTEGRATION: "True"
+      AUTO_APPROVE_ON_NOTIFIER_FAIL: "False"
       K8S_TOKEN_AUDIENCE: https://kubernetes.default.svc.cluster.local 
       K8S_SA_NAME: sentinel-executor-sa 
       K8S_SA_NAMESPACE: sentinel
       K8S_KUBECONFIG_PATH: /app/kubeconfig
+      DEBUG_DELAY_ENABLED: "true"
+      DEBUG_STEP_DELAY: "10"
 
     volumes:
       - ./src/auth/auth.py:/app/src/auth/auth.py:ro
       - ./src/executor_agent/whitelist.json:/app/src/executor_agent/whitelist.json:ro
       - /root/kubeconfigs/external-kubeconfig.yaml:/app/kubeconfig:ro
+      - ./src/orchestrator/static:/app/static:ro
 
     depends_on:
       - analyzer
@@ -48,7 +53,7 @@ services:
     depends_on:
       - orchestrator
     environment:
-      ENABLE_MOCK_MODE: "True"
+      ENABLE_MOCK_MODE: "False"
       ORCHESTRATOR_URL: http://orchestrator:8032
       BOSS_TOKEN: dev-token
       LOG_LEVEL: INFO
@@ -67,7 +72,7 @@ services:
     ports:
       - "8034:8034"
     environment:
-      DISABLE_LLM_INTEGRATION: "True"
+      DISABLE_LLM_INTEGRATION: "False"
       LLM_PROVIDER: "openai"               # openai / gemini / grok 
       QDRANT_URL: "http://qdrant:6333"
       QDRANT_COLLECTION: "analyzer_cache"
@@ -89,7 +94,7 @@ services:
     ports:
       - "8035:8035"
     environment:
-      DISABLE_K8S_INTEGRATION: "True"
+      DISABLE_K8S_INTEGRATION: "False"
       KUBECONFIG: /app/kubeconfig
     networks:
       - sentinel_net

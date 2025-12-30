@@ -30,7 +30,6 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | AUTH | %(message)s')
 logger = logging.getLogger(__name__)
 
-#TODO: 환경변수 또는 설정 파일에서 시크릿 키 관리
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "super-secret-key-for-sentinel-ai")
 ALGORITHM = "HS256"
 

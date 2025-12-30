@@ -44,6 +44,7 @@
     "kubectl -n {namespace} scale deployment {deployment} --replicas={replicas}",
     "kubectl -n {namespace} rollout restart deployment {deployment}",
     "kubectl -n {namespace} rollout restart deployment {deployment} -n {namespace}",
-    "kubectl -n {namespace} apply -f {manifest_file}"
+    "kubectl -n {namespace} apply -f {manifest_file}",
+    "kubectl -n {namespace} set image pod/{pod} {container}={image}"
   ]
 }

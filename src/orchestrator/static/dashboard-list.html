@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ko" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Kubernetes AI Workflow - Task 목록</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Google Translate 등 확장 프로그램으로 인한 removeChild 오류 방지 패치 -->
+  <script>
+    // Node.prototype.removeChild 및 insertBefore 안전하게 오버라이드
+    if (typeof Node !== 'undefined') {
+      const originalRemoveChild = Node.prototype.removeChild;
+      Node.prototype.removeChild = function (child) {
+        if (child && child.parentNode !== this) {
+          // 이미 다른 부모에 있거나 고아 노드인 경우 무시하고 경고만
+          console.warn('Attempted to remove orphaned child node:', child);
+          return child;
+        }
+        try {
+          return originalRemoveChild.apply(this, arguments);
+        } catch (e) {
+          console.warn('removeChild error suppressed:', e);
+          return child;
+        }
+      };
+
+      const originalInsertBefore = Node.prototype.insertBefore;
+      Node.prototype.insertBefore = function (newNode, referenceNode) {
+        if (referenceNode && referenceNode.parentNode !== this) {
+          console.warn('Attempted to insert before orphaned reference node:', referenceNode);
+          return newNode;
+        }
+        try {
+          return originalInsertBefore.apply(this, arguments);
+        } catch (e) {
+          console.warn('insertBefore error suppressed:', e);
+          return newNode;
+        }
+      };
+    }
+  </script>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // 간단한 Error Boundary (앱 전체 크래시 방지)
+    class ErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { hasError: false };
+      }
+
+      static getDerivedStateFromError(error) {
+        return { hasError: true };
+      }
+
+      componentDidCatch(error, errorInfo) {
+        console.error("React ErrorBoundary caught:", error, errorInfo);
+      }
+
+      render() {
+        if (this.state.hasError) {
+          return (
+            <div className="flex items-center justify-center h-screen text-red-400">
+              <i data-lucide="alert-triangle" className="w-16 h-16 mr-6"></i>
+              <div>
+                <h2 className="text-2xl font-bold">앱에 오류가 발생했습니다</h2>
+                <p className="mt-2">새로고침(F5)해 주세요.</p>
+              </div>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+    const TaskListDashboard = () => {
+      const [tasks, setTasks] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+
+      useEffect(() => {
+        const fetchTasks = async () => {
+          try {
+            const res = await fetch('/tasks');
+            if (!res.ok) {
+              throw new Error(`HTTP ${res.status}`);
+            }
+            const data = await res.json();
+            const sortedTasks = (data.tasks || []).sort((a, b) =>
+              (b.received_at || '').localeCompare(a.received_at || '')
+            );
+            setTasks(sortedTasks);
+            setError(null);
+          } catch (err) {
+            console.error("Failed to fetch tasks:", err);
+            setError(err.message);
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        fetchTasks();
+        const interval = setInterval(fetchTasks, 3000);
+        return () => clearInterval(interval);
+      }, []);
+
+      const getIconName = (status) => {
+        if (status?.includes('resolved') || status === 'auto_approved') return 'check-circle';
+        if (status?.includes('failed') || status?.includes('rejected')) return 'x-circle';
+        if (status === 'awaiting_approval') return 'clock';
+        return 'activity';
+      };
+
+      const getStatusColor = (status) => {
+        if (status?.includes('resolved') || status === 'auto_approved') return 'text-green-400';
+        if (status?.includes('failed') || status?.includes('rejected')) return 'text-red-400';
+        if (status === 'awaiting_approval') return 'text-yellow-400';
+        return 'text-blue-400';
+      };
+
+      // 매 렌더링마다 아이콘 갱신 (lucide)
+      useEffect(() => {
+        if (typeof lucide !== 'undefined') {
+          lucide.createIcons();
+        }
+      });
+
+      if (loading) {
+        return (
+          <div className="flex items-center justify-center h-screen">
+            <i data-lucide="activity" className="w-12 h-12 animate-spin text-blue-400 mr-4"></i>
+            <span className="text-xl">태스크 목록을 불러오는 중...</span>
+          </div>
+        );
+      }
+
+      if (error) {
+        return (
+          <div className="flex items-center justify-center h-screen text-red-400">
+            <i data-lucide="alert-circle" className="w-12 h-12 mr-4"></i>
+            <span className="text-xl">오류: {error}</span>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen p-8">
+          <div className="max-w-6xl mx-auto">
+            <h1 className="text-4xl font-bold mb-2">Kubernetes AI Workflow</h1>
+            <p className="text-slate-400 mb-8">실시간 태스크 목록 (3초마다 자동 갱신)</p>
+
+            {tasks.length === 0 ? (
+              <div className="text-center py-20">
+                <i data-lucide="inbox" className="w-20 h-20 mx-auto mb-6 text-slate-600"></i>
+                <p className="text-2xl text-slate-400">아직 생성된 태스크가 없습니다.</p>
+                <p className="text-sm text-slate-500 mt-4">
+                  Detector가 Pod 이상을 감지하면 자동으로 태스크가 생성됩니다.
+                </p>
+              </div>
+            ) : (
+              <div className="grid gap-6 md:grid-cols-1 lg:grid-cols-2">
+                {tasks.map((task) => {
+                  const payload = task.payload || {};
+                  const pod = payload.pod_name || 'unknown';
+                  const ns = payload.namespace || 'default';
+                  const status = task.status || 'unknown';
+                  const iconName = getIconName(status);
+
+                  return (
+                    <a
+                      href={`/dashboard/task/${task.task_id}`}
+                      key={task.task_id}
+                      className="block bg-slate-800/60 backdrop-blur-lg rounded-2xl p-8 border border-slate-700 hover:border-blue-500/70 transition-all duration-300 hover:scale-105 hover:shadow-2xl hover:shadow-blue-500/20"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-4 mb-4">
+                            <i
+                              data-lucide={iconName}
+                              className={`w-8 h-8 ${getStatusColor(status)} ${iconName === 'activity' ? 'animate-spin' : ''}`}
+                            ></i>
+                            <code className="text-lg font-mono text-blue-300">{task.task_id}</code>
+                          </div>
+
+                          <div className="space-y-3 text-sm">
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-400">Pod:</span>
+                              <span className="font-semibold text-white">{pod}</span>
+                              <span className="text-slate-500">({ns})</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-400">상태:</span>
+                              <span className={`font-bold ${getStatusColor(status)}`}>{status}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-400">감지 시간:</span>
+                              <span className="text-white">
+                                {task.received_at ? new Date(task.received_at).toLocaleString('ko-KR') : '-'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-4xl text-slate-500">→</div>
+                      </div>
+                    </a>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    // ErrorBoundary로 전체 앱 감싸기 + 루트 렌더링
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(
+      <ErrorBoundary>
+        <TaskListDashboard />
+      </ErrorBoundary>
+    );
+
+    // 초기 아이콘 생성
+    if (typeof lucide !== 'undefined') {
+      lucide.createIcons();
+    }
+  </script>
+</body>
+</html>
