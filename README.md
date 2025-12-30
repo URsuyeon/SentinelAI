@@ -8,7 +8,7 @@ SentinelAI는 Kubernetes 환경에서 발생하는 이상을 탐지하고, 분�
 | :--- | :--- | :--- | :--- |
 | **Orchestrator** | 중앙 허브, 워크플로우 관리, 인증/인가 | FastAPI | 8032 |
 | **Detector Agent** | K8s 상태 스캔 및 이상 탐지 | Python/FastAPI | 8033 |
-| **Analyzer Agent** | 문제 원인/해결 분석 및 K8s 명령어 생성 (Mock LLM) | FastAPI | 8034 |
+| **Analyzer Agent** | 문제 원인/해결 분석 및 K8s 명령어 생성 | FastAPI | 8034 |
 | **Executor Agent** | Orchestrator 승인 명령 실행 | FastAPI | 8035 |
 | **RAG Agent** | 문서 기반 참고 정보 검색 | FastAPI | 8036 |
 | **Slack Notifier** | 운영자 승인 요청 및 알림 | FastAPI | 8037 |
