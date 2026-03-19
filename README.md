@@ -1,6 +1,26 @@
 # SentinelAI: LLM 기반 인프라 모니터링 에이전트
 
 SentinelAI는 Kubernetes 환경에서 발생하는 이상을 탐지하고, 분석하며, 자율적으로 해결하는 것을 목표로 하는 에이전트 기반 시스템입니다.
+![(수정1)ipp_project_이수연_page-0001](https://github.com/user-attachments/assets/70aaf787-61ff-4a97-8bf1-770776987f1c)
+![(수정1)ipp_project_이수연_page-0002](https://github.com/user-attachments/assets/0a6e86b4-b096-497c-a996-cbe27669e020)
+![(수정1)ipp_project_이수연_page-0004](https://github.com/user-attachments/assets/65488bdb-1ce6-48b0-ba67-5b9243589fe4)
+![(수정1)ipp_project_이수연_page-0005](https://github.com/user-attachments/assets/6235c9f6-7d2a-4191-b792-9809b7819d0f)
+![(수정1)ipp_project_이수연_page-0006](https://github.com/user-attachments/assets/68f1f025-3ad8-4bbf-82b1-3916525d51c0)
+![(수정1)ipp_project_이수연_page-0007](https://github.com/user-attachments/assets/1daab82a-42c0-415a-8bda-20848d89aae9)
+![(수정1)ipp_project_이수연_page-0008](https://github.com/user-attachments/assets/311e87af-ddad-4605-98e2-83b4fc93040d)
+![(수정1)ipp_project_이수연_page-0009](https://github.com/user-attachments/assets/d344586b-cfff-492e-b6b7-7d81e2278c12)
+![(수정1)ipp_project_이수연_page-0010](https://github.com/user-attachments/assets/b62f4f60-af25-4997-9a2c-96e984c023aa)
+![(수정1)ipp_project_이수연_page-0011](https://github.com/user-attachments/assets/157865a3-1849-46f2-a30b-609a54fa91b7)
+![(수정1)ipp_project_이수연_page-0012](https://github.com/user-attachments/assets/592accb9-a91e-48b6-9bca-798753fcc704)
+![(수정1)ipp_project_이수연_page-0013](https://github.com/user-attachments/assets/bbf6aed6-bfb6-4ea6-9ec2-99712a9f09a8)
+![(수정1)ipp_project_이수연_page-0014](https://github.com/user-attachments/assets/b7523886-cb15-43dd-8a48-1a3b503ec560)
+![(수정1)ipp_project_이수연_page-0015](https://github.com/user-attachments/assets/8888f887-994f-4c30-b207-e70ead29be1c)
+![(수정1)ipp_project_이수연_page-0016](https://github.com/user-attachments/assets/eee6e03a-8c7f-4720-b809-757f428cf324)
+![(수정1)ipp_project_이수연_page-0017](https://github.com/user-attachments/assets/b4d102c2-183c-4fbb-9477-82ba3f130a66)
+![(수정1)ipp_project_이수연_page-0018](https://github.com/user-attachments/assets/9bd9d649-f6a5-40a9-987e-7f442e2a97de)
+![(수정1)ipp_project_이수연_page-0019](https://github.com/user-attachments/assets/5304ea1d-5d6e-4da8-a9c9-a66b1557eb10)
+![(수정1)ipp_project_이수연_page-0020](https://github.com/user-attachments/assets/f988b86b-271b-4f66-9c72-f36a54d8ddd6)
+![(수정1)ipp_project_이수연_page-0021](https://github.com/user-attachments/assets/841b0867-9748-4a20-9a55-f621229b52fd)
 
 ## 1. 구성 요소
 
